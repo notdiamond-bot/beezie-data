@@ -15,17 +15,20 @@ import { addPulls, catchUp, readDays, readMarks, summariseDays } from './api/_st
 
 import { existsSync, readFileSync } from 'node:fs';
 
-// This runs on every collector run (every ten minutes) but only does its work
-// about once an hour, which keeps this repo's history small. FORCE=1 overrides.
-const FRESH_MS = 55 * 60_000;
-const last = new URL('./data/summary-24h.json', import.meta.url);
-if (!process.env.FORCE && existsSync(last)) {
-  const age = Date.now() - (JSON.parse(readFileSync(last, 'utf8')).updatedAt || 0);
-  if (age < FRESH_MS) {
-    console.log(`numbers are ${Math.round(age / 60000)} minutes old; not counting again yet`);
-    process.exit(0);
-  }
+// This runs on every collector run (every ten minutes). It counts new pulls each time
+// and refreshes today and the last 24 hours; the longer periods are rewritten only about
+// once an hour, which keeps this repo's history small. FORCE=1 overrides.
+const FRESH_MS = 8 * 60_000;
+const BIG_FRESH_MS = 55 * 60_000;
+const ageOf = (name) => {
+  const file = new URL(`./data/${name}`, import.meta.url);
+  return existsSync(file) ? Date.now() - (JSON.parse(readFileSync(file, 'utf8')).updatedAt || 0) : Infinity;
+};
+if (!process.env.FORCE && ageOf('summary-24h.json') < FRESH_MS) {
+  console.log('numbers are fresh; not counting again yet');
+  process.exit(0);
 }
+const bigDue = Boolean(process.env.FORCE) || ageOf('summary-7.json') >= BIG_FRESH_MS;
 
 const started = Date.now();
 const { claws } = await fetchAllClaws({
@@ -59,7 +62,7 @@ mkdirSync(new URL('./data/', import.meta.url), { recursive: true });
 const write = (name, body) => writeFileSync(new URL(`./data/${name}`, import.meta.url), JSON.stringify(body));
 
 // The calendar periods: the last N UTC days, today so far included.
-for (const days of [1, 7, 30, 91, 182, 365]) {
+for (const days of bigDue ? [1, 7, 30, 91, 182, 365] : [1]) {
   const fromAt = today - (days - 1) * DAY;
   const found = await readDays(fromAt, today);
   write(`summary-${days}.json`, {
