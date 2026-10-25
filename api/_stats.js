@@ -629,6 +629,9 @@ export function summariseDays(stats, retired = [], paused = []) {
     claws: Object.values(claws).sort(
       (a, b) => Number(a.retired || a.paused) - Number(b.retired || b.paused) || b.revenue - a.revenue
     ),
+    // Every player, compact — [id, name, pulls, spent, paid back] — so a page can
+    // search and page through all of them, not just the top 25.
+    allPlayers: playerList.map((p) => [p.id, p.name, p.s, Math.round(p.r * 100) / 100, Math.round(p.p * 100) / 100]),
     topPlayers: [...playerList].sort((a, b) => b.r - a.r).slice(0, 25),
     topPullers: [...playerList].sort((a, b) => b.s - a.s).slice(0, 25),
     biggest: best.sort((a, b) => b.fmv - a.fmv).slice(0, 25),
