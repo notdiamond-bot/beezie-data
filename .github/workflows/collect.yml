@@ -16,15 +16,20 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - run: node collect.mjs
+      # The Data tab's numbers: counts only pulls it hasn't counted yet, about once an
+      # hour. A failure here must not stop the samples being saved.
+      - run: node build-stats.mjs
+        continue-on-error: true
+        timeout-minutes: 15
       - name: Save
         run: |
           git config user.name "beezie-data[bot]"
           git config user.email "beezie-data@users.noreply.github.com"
-          git add samples
+          git add samples kv data
           if git diff --cached --quiet; then echo "nothing new"; else
             git commit -m "samples $(date -u +%Y-%m-%dT%H:%MZ)"
             git pull --rebase -q || true
