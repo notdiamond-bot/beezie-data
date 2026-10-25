@@ -16,7 +16,7 @@ figure aligned with `t` (`null` where there was no live reading):
 `build-stats.mjs` (run by the same workflow, every ten minutes; the periods longer than a day are rewritten hourly) counts every pull on
 Beezie's Solana claws using the site's own counting code in `api/`, against files in
 `kv/` instead of a database. It only adds pulls it hasn't counted, so finished days
-are saved once and kept. It then writes the periods the Data tab shows to `data/`:
+are saved once and kept. It then writes the periods the Data tab shows to `data/`, published each run as a single replaced commit on the `snapshots` branch (so no history builds up):
 `summary-1.json` (today, UTC), `-7`, `-30`, `-91`, `-182`, `-365` (calendar days, today
 so far included) and `summary-24h.json` (the last 24 hours as they ran).
 

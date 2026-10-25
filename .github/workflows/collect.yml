@@ -20,8 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: node collect.mjs
-      # The Data tab's numbers: counts only pulls it hasn't counted yet, about once an
-      # hour. A failure here must not stop the samples being saved.
+      # The Data tab's numbers: counts only pulls it hasn't counted yet. A failure here
+      # must not stop the samples being saved.
       - run: node build-stats.mjs
         continue-on-error: true
         timeout-minutes: 15
@@ -29,9 +29,24 @@ jobs:
         run: |
           git config user.name "beezie-data[bot]"
           git config user.email "beezie-data@users.noreply.github.com"
-          git add samples kv data
+          git add samples kv
           if git diff --cached --quiet; then echo "nothing new"; else
             git commit -m "samples $(date -u +%Y-%m-%dT%H:%MZ)"
             git pull --rebase -q || true
             git push
           fi
+      # The summaries go out as ONE commit on the `snapshots` branch, replaced each time,
+      # so publishing them every run keeps no history and the repo stays small.
+      - name: Publish snapshots
+        if: hashFiles('data/summary-24h.json') != ''
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rm -rf /tmp/snap && mkdir -p /tmp/snap && cp -r data /tmp/snap/data
+          cd /tmp/snap
+          git init -q -b snapshots
+          git config user.name "beezie-data[bot]"
+          git config user.email "beezie-data@users.noreply.github.com"
+          git add data
+          git commit -qm "snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -qf "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" snapshots

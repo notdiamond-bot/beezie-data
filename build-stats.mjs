@@ -13,22 +13,10 @@ import { BEEZIE_HEADERS } from './api/_headers.js';
 import { FEED_CHAINS, recentClawPulls } from './api/_pulls.js';
 import { addPulls, catchUp, readDays, readMarks, summariseDays } from './api/_stats.js';
 
-import { existsSync, readFileSync } from 'node:fs';
-
-// This runs on every collector run (every ten minutes). It counts new pulls each time
-// and refreshes today and the last 24 hours; the longer periods are rewritten only about
-// once an hour, which keeps this repo's history small. FORCE=1 overrides.
-const FRESH_MS = 8 * 60_000;
-const BIG_FRESH_MS = 55 * 60_000;
-const ageOf = (name) => {
-  const file = new URL(`./data/${name}`, import.meta.url);
-  return existsSync(file) ? Date.now() - (JSON.parse(readFileSync(file, 'utf8')).updatedAt || 0) : Infinity;
-};
-if (!process.env.FORCE && ageOf('summary-24h.json') < FRESH_MS) {
-  console.log('numbers are fresh; not counting again yet');
-  process.exit(0);
-}
-const bigDue = Boolean(process.env.FORCE) || ageOf('summary-7.json') >= BIG_FRESH_MS;
+// This runs on every collector run (every ten minutes): it counts the pulls it hasn't
+// counted yet and rewrites every summary. The summaries are published as a single
+// replaced commit on the `snapshots` branch (see the workflow), so rewriting them this
+// often adds nothing to the repository's history.
 
 const started = Date.now();
 const { claws } = await fetchAllClaws({
@@ -62,7 +50,7 @@ mkdirSync(new URL('./data/', import.meta.url), { recursive: true });
 const write = (name, body) => writeFileSync(new URL(`./data/${name}`, import.meta.url), JSON.stringify(body));
 
 // The calendar periods: the last N UTC days, today so far included.
-for (const days of bigDue ? [1, 7, 30, 91, 182, 365] : [1]) {
+for (const days of [1, 7, 30, 91, 182, 365]) {
   const fromAt = today - (days - 1) * DAY;
   const found = await readDays(fromAt, today);
   write(`summary-${days}.json`, {
