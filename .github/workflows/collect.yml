@@ -1,0 +1,35 @@
+name: collect
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One at a time, so two runs never write the same file.
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node collect.mjs
+      - name: Save
+        run: |
+          git config user.name "beezie-data[bot]"
+          git config user.email "beezie-data@users.noreply.github.com"
+          git add samples
+          if git diff --cached --quiet; then echo "nothing new"; else
+            git commit -m "samples $(date -u +%Y-%m-%dT%H:%MZ)"
+            git pull --rebase -q || true
+            git push
+          fi
