@@ -33,6 +33,7 @@ const WORK = new URL('./base-work/', import.meta.url);
 mkdirSync(WORK, { recursive: true });
 const API = 'https://api.beezie.com';
 const RPC = 'https://mainnet.base.org';
+const RPC_BACKUP = 'https://base.drpc.org';
 const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const CLAWS = { 98: 91000, 99: 50000, 100: 30000, 101: 30000, 104: 30000 }; // generous ceilings to bisect under
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -166,21 +167,23 @@ const receiptsFile = new URL('receipts.json', WORK);
 const receipts = existsSync(receiptsFile) ? JSON.parse(readFileSync(receiptsFile, 'utf8')) : {};
 const hashes = [...new Set(Object.values(plays).flat().map((p) => p.tx))].filter((h) => !receipts[h]);
 log(`receipts: ${Object.keys(receipts).length} cached, ${hashes.length} to fetch`);
-const BATCH = 50;
+const BATCH = 20; // under Base's node's 25-requests-a-second cap, counting every call in a batch
 const batches = [];
 for (let i = 0; i < hashes.length; i += BATCH) batches.push(hashes.slice(i, i + BATCH));
 let fetched = 0;
 for (const group of batches) {
   const body = group.map((h, i) => ({ jsonrpc: '2.0', id: i, method: 'eth_getTransactionReceipt', params: [h] }));
   let replies = null;
-  for (let attempt = 0; attempt < 8 && !replies; attempt += 1) {
+  for (let attempt = 0; attempt < 14 && !replies; attempt += 1) {
+    // After a few failures, try a second public node, then come back.
+    const node = attempt >= 3 && attempt % 2 === 1 ? RPC_BACKUP : RPC;
     try {
-      const res = await fetch(RPC, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(node, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });
       const json = await res.json();
-      if (Array.isArray(json) && json.every((r) => !r.error)) replies = json;
-      else await sleep(1200 * (attempt + 1));
+      if (Array.isArray(json) && json.length === body.length && json.every((r) => !r.error)) replies = json;
+      else await sleep(Math.min(1500 * (attempt + 1), 20000));
     } catch {
-      await sleep(1200 * (attempt + 1));
+      await sleep(Math.min(1500 * (attempt + 1), 20000));
     }
   }
   if (!replies) throw new Error('Base node would not answer; run again to resume');
@@ -197,11 +200,11 @@ for (const group of batches) {
     receipts[group[r.id]] = { b: parseInt(rec.blockNumber, 16), to };
   }
   fetched += group.length;
-  if ((fetched / BATCH) % 100 === 0) {
+  if ((fetched / BATCH) % 50 === 0) {
     log(`  receipts ${fetched}/${hashes.length}`);
     writeFileSync(receiptsFile, JSON.stringify(receipts));
   }
-  await sleep(260);
+  await sleep(1000);
 }
 writeFileSync(receiptsFile, JSON.stringify(receipts));
 log(`receipts done: ${Object.keys(receipts).length}`);
