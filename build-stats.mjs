@@ -40,6 +40,14 @@ for (let pass = 1; pass <= 40 && Date.now() - started < LIMIT_MS; pass += 1) {
 
 const marks = await readMarks();
 const registry = Object.values(marks?.claws || {});
+// A recount that hasn't reached every Solana claw yet would publish a partial picture:
+// keep the last published summaries and finish on the next run. (Base claws are
+// not counted from the feed — their history is imported — so they don't hold this up.)
+const uncounted = registry.filter((claw) => claw.blockchain === 'solana' && !marks?.[claw.key]);
+if (uncounted.length) {
+  console.log(`${uncounted.length} Solana claws not counted yet; keeping the published summaries`);
+  process.exit(0);
+}
 const retired = registry.filter((claw) => claw.retired).map((claw) => claw.key);
 const paused = registry.filter((claw) => claw.paused).map((claw) => claw.key);
 
