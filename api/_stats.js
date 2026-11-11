@@ -24,7 +24,7 @@
 // take: it prices a kept slab at market value, not at what Beezie paid for it.
 
 import { tierOf } from '../src/chains.js';
-import { ELYSIUM, isSpeculate } from '../src/speculate.js';
+import { sideChain } from '../src/speculate.js';
 import { FEED_CHAINS, fetchClawPulls } from './_pulls.js';
 import { readMany, readState, readStateStrict, writeState } from './_store.js';
 
@@ -103,16 +103,15 @@ const metaOf = (claw) => ({
 // Beezie's feed in one catch-up, so a change to what a day holds starts a
 // fresh set of keys and backfills them rather than migrating the old ones.
 // v2: each claw-day keeps its top pulls, not just the biggest.
-// v3: Speculate's plays (Elysium) are counted as a claw of their own.
-const DAY_PREFIX = 'beezie:stats:v3:';
-const MARK_KEY = 'beezie:stats:v3:mark';
+// v4: Speculate's (Elysium) and Dev.Fun's plays are each counted as claws of their own.
+const DAY_PREFIX = 'beezie:stats:v4:';
+const MARK_KEY = 'beezie:stats:v4:mark';
 // The last catch-up's start, whether it finished, and its first error, so a run
 // that keeps failing can be seen from outside.
-const ATTEMPT_KEY = 'beezie:stats:v3:attempt';
+const ATTEMPT_KEY = 'beezie:stats:v4:attempt';
 // The biggest pulls kept per claw per day — enough for any top-25 list.
 const TOP_PER_DAY = 10;
 const DAY_MS = 86_400_000;
-const ELYSIUM_SUFFIX = `@${ELYSIUM}`;
 
 // A short wallet id is plenty to count players apart, and keeps day keys small.
 const walletId = (wallet) => String(wallet || '?').slice(0, 10);
@@ -215,8 +214,9 @@ export function addPulls(days, claw, pulls) {
     const day = dayOf(pull.at);
     const totals = (days[day] ||= { claws: {}, players: {}, names: {}, partial: [] });
     // Speculate's plays go through the same claw but are counted apart, as their own chain.
-    const key = isSpeculate(pull.player) ? `${claw.key}${ELYSIUM_SUFFIX}` : claw.key;
-    const c = (totals.claws[key] ||= emptyClaw(key === claw.key ? claw : { ...claw, blockchain: ELYSIUM }));
+    const side = sideChain(pull.player);
+    const key = side ? `${claw.key}@${side}` : claw.key;
+    const c = (totals.claws[key] ||= emptyClaw(side ? { ...claw, blockchain: side } : claw));
     const fmv = (pull.itemValue || 0) / 1e6;
     const kept = pull.status === 'claimed';
     const paid = kept ? fmv : ((pull.swapValue || 0) / 1e6) * (1 - fee);

@@ -25,7 +25,7 @@
 // were detected before. Nothing depends on this existing.
 
 import { CHAINS, getClawUrl } from '../src/chains.js';
-import { SPECULATE_WALLET, SPECULATE_FEED_NAME } from '../src/speculate.js';
+import { SPECULATE_WALLET, SPECULATE_FEED_NAME, ARENA_WALLET, ARENA_FEED_NAME } from '../src/speculate.js';
 import { readState, writeState } from './_store.js';
 
 const ACTIONS_KEY = 'beezie:actions';
@@ -153,7 +153,7 @@ export function normalisePull(raw, blockchain) {
     at,
     wallet: raw.from || null,
     // Speculate's plays are known by their wallet, not the name Beezie shows.
-    player: raw.from === SPECULATE_WALLET ? SPECULATE_FEED_NAME : raw.fromUsername || null,
+    player: raw.from === SPECULATE_WALLET ? SPECULATE_FEED_NAME : raw.from === ARENA_WALLET ? ARENA_FEED_NAME : raw.fromUsername || null,
     // 'swapped', or 'claimed' when the player kept the slab.
     status: raw.status || null,
     kept: raw.status === 'claimed',
