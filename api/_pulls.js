@@ -180,9 +180,15 @@ export async function fetchClawPulls(claw, pageSize = 100) {
   let items = await call(id, pageUrl, clawId, pageSize).catch(() => null);
   if (!items) {
     // Most likely Beezie redeployed and the id moved. Find it again, once.
+    // A dead page (a retired claw) fails the same way, and must not lose the id the
+    // live claws still use: keep it unless a search finds a newer one.
+    const previous = id;
     actions.delete(blockchain);
     id = await search(blockchain, pageUrl);
-    if (!id) return null;
+    if (!id) {
+      actions.set(blockchain, previous);
+      return null;
+    }
     items = await call(id, pageUrl, clawId, pageSize).catch(() => null);
     if (!items) return null;
   }
