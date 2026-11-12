@@ -105,6 +105,41 @@ for (const days of [1, 7, 30, 91, 182, 365]) {
 // The last 24 hours as they ran, read straight from each claw's feed.
 const since = now - DAY;
 const daysMap = {};
+// The same 24 hours by the clock hour, for the 24H chart: the first and last are part
+// hours. Each hour's pulls go through addPulls, so the money is worked out one way only.
+const HOUR = 3_600_000;
+const firstHour = Math.floor(since / HOUR) * HOUR;
+const hourly = Array.from({ length: Math.floor((now - firstHour) / HOUR) + 1 }, (_, i) => ({
+  at: firstHour + i * HOUR,
+  revenue: 0,
+  paid: 0,
+  pulls: 0,
+  byChain: {},
+  pullsByChain: {},
+}));
+function addHours(claw, pulls) {
+  const groups = new Map();
+  for (const pull of pulls) {
+    const i = Math.floor((pull.at - firstHour) / HOUR);
+    if (!groups.has(i)) groups.set(i, []);
+    groups.get(i).push(pull);
+  }
+  for (const [i, group] of groups) {
+    const row = hourly[i];
+    if (!row) continue;
+    const counted = {};
+    addPulls(counted, claw, group);
+    for (const day of Object.values(counted)) {
+      for (const c of Object.values(day.claws)) {
+        row.revenue += c.revenue;
+        row.paid += c.swapPaid + c.keptFmv;
+        row.pulls += c.slabs;
+        row.byChain[c.chain] = (row.byChain[c.chain] || 0) + c.revenue;
+        row.pullsByChain[c.chain] = (row.pullsByChain[c.chain] || 0) + c.slabs;
+      }
+    }
+  }
+}
 await Promise.all(
   registry
     .filter((claw) => FEED_CHAINS.includes(claw.blockchain) && (marks[claw.key]?.at || 0) >= since)
@@ -114,7 +149,10 @@ await Promise.all(
         pulls = await recentClawPulls(claw, size, now).catch(() => null);
         if (!pulls || pulls.length < size || pulls[pulls.length - 1].at <= since) break;
       }
-      if (pulls) addPulls(daysMap, claw, pulls.filter((pull) => pull.at >= since));
+      if (!pulls) return;
+      const recent = pulls.filter((pull) => pull.at >= since);
+      addPulls(daysMap, claw, recent);
+      addHours(claw, recent);
     })
 );
 const rolling = Object.keys(daysMap).sort().map((day) => ({ day, ...daysMap[day] }));
@@ -130,7 +168,7 @@ write('summary-24h.json', {
   first: rolling[0]?.day || null,
   rolling: true,
   snapshot: true,
-  summary: rollingLean,
+  summary: { ...rollingLean, hourly: hourly.map((h) => ({ ...h, paid: Math.round(h.paid * 100) / 100 })) },
 });
 console.log(`done in ${Math.round((Date.now() - started) / 1000)}s`);
 process.exit(0);
