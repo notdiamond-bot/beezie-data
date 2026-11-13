@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { addPulls, catchUp, dayKey, mergeDay, readMarks, summariseDays } from './api/_stats.js';
 import { readState } from './api/_store.js';
 
-// This runs on every collector run (every ten minutes): it counts the pulls it hasn't
+// This runs on every workflow run (every five minutes): it counts the pulls it hasn't
 // counted yet and rewrites every summary. The summaries are published as a single
 // replaced commit on the `snapshots` branch (see the workflow), so rewriting them this
 // often adds nothing to the repository's history.
