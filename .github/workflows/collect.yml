@@ -19,6 +19,13 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
+      # What players actually paid (promos included), read from Solana. Needs the
+      # HELIUS_RPC_URL secret; without it this step does nothing.
+      - run: node paid.mjs
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          HELIUS_RPC_URL: ${{ secrets.HELIUS_RPC_URL }}
       # The Data tab's numbers: counts only pulls it hasn't counted yet. A failure here
       # must not stop the counts so far being saved.
       - run: node build-stats.mjs

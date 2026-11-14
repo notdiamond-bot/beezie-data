@@ -14,6 +14,7 @@ import { FEED_CHAINS, recentClawPulls } from './api/_pulls.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { addPulls, catchUp, dayKey, mergeDay, readMarks, summariseDays } from './api/_stats.js';
 import { readState } from './api/_store.js';
+import { applyPaid, paidPlays, paidSince } from './api/_paid.js';
 
 // This runs on every workflow run (every five minutes): it counts the pulls it hasn't
 // counted yet and rewrites every summary. The summaries are published as a single
@@ -84,6 +85,10 @@ for (const days of [1, 7, 30, 91, 182, 365]) {
   const fromAt = today - (days - 1) * DAY;
   const found = await loadDays(fromAt, today);
   const summary = summariseDays(found, retired, paused);
+  // Real prices where they were read (promos, discounts): see paid.mjs.
+  const periodDays = found.map((d) => d.day);
+  applyPaid(summary, paidPlays(periodDays));
+  summary.actualPricesFrom = paidSince(periodDays);
   const { allPlayers, ...lean } = summary;
   // The full player list is its own file: the page loads it only when someone searches
   // or asks for more, so the summary a viewer always downloads stays small.
@@ -156,7 +161,11 @@ await Promise.all(
     })
 );
 const rolling = Object.keys(daysMap).sort().map((day) => ({ day, ...daysMap[day] }));
-const { allPlayers: rollingPlayers, ...rollingLean } = summariseDays(rolling, retired, paused);
+const rollingSummary = summariseDays(rolling, retired, paused);
+rollingSummary.hourly = hourly.map((h) => ({ ...h, paid: Math.round(h.paid * 100) / 100 }));
+applyPaid(rollingSummary, paidPlays([dayOf(since), dayOf(now)], since));
+rollingSummary.actualPricesFrom = paidSince([dayOf(since), dayOf(now)]);
+const { allPlayers: rollingPlayers, ...rollingLean } = rollingSummary;
 write('players-24h.json', { updatedAt: now, allPlayers: rollingPlayers });
 write('summary-24h.json', {
   days: 1,
@@ -168,7 +177,15 @@ write('summary-24h.json', {
   first: rolling[0]?.day || null,
   rolling: true,
   snapshot: true,
-  summary: { ...rollingLean, hourly: hourly.map((h) => ({ ...h, paid: Math.round(h.paid * 100) / 100 })) },
+  summary: rollingLean,
+});
+// Every play from the last eight days whose real price differed from list, for the
+// Claw Log: { '<claw>|<wallet>|<at>': [paid, list, slabs] }. Small: only the exceptions.
+const recentDays = Array.from({ length: 8 }, (_, i) => dayOf(now - i * DAY));
+write('paid-recent.json', {
+  updatedAt: now,
+  from: paidSince([...recentDays].reverse()),
+  plays: Object.fromEntries(paidPlays(recentDays).map((p) => [p.id, [p.paid, p.list, p.n]])),
 });
 console.log(`done in ${Math.round((Date.now() - started) / 1000)}s`);
 process.exit(0);
