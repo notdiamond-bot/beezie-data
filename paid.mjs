@@ -4,10 +4,11 @@
 //
 // Every Solana claw play opens with a "commit" transaction on Beezie's claw
 // program, which pays Beezie's play wallet the claw's list price. With a promo,
-// that list price is split: the player pays part from their own wallet and a
-// Beezie promo wallet pays the rest (a $30 Wildcard: $22.50 from the player,
-// $7.50 from Beezie). What left the player's own wallet is the real price of the
-// play, so that is what is kept. Beezie's pull feed only knows the list price, so
+// Beezie's promo wallet pays part (a $30 Wildcard: $7.50 from the promo wallet,
+// $22.50 from the player) or all of it (a free play). Plays paid with Beezie
+// credits come from Beezie's credits wallet instead (a RedeemCredits step): those
+// credits were bought, so they count as the full price. The real price of a play
+// is what reached Beezie's play account less the promo wallet's share. Beezie's pull feed only knows the list price, so
 // the Data tab and the Claw Log used to assume it for every play.
 //
 // Each run reads the payments that landed since the last run (one signature list
@@ -39,12 +40,17 @@ if (!RPC) {
 // Beezie's USDC account that receives claw play payments.
 const PAY_ACCOUNT = '4GwfrCbTqFq6fGGbunX5jcxTdb2M2EoPYBcU5HZYuJ6Z';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+// Beezie's promo wallet: money from it is a discount. (Its credits wallet,
+// 9vLHQPNqwXYA98ExNHgRHSHUxXQZuRD3VCEhUEAqKZXh, pays for plays bought with credits:
+// not a discount.)
+const PROMO_WALLETS = new Set(['4WdHzBgh7NbpyZKoYVAEyNr9wvf2vDvCnrgoFsKDDUuZ']);
 // A first run looks back this far; after that, only what is new.
 const FIRST_LOOKBACK_S = 6 * 3600;
 const BACKFILL_FROM = process.env.PAID_BACKFILL_FROM ? Date.parse(process.env.PAID_BACKFILL_FROM) / 1000 : null;
 // Bumped when what is measured changes: the state and day files are then rebuilt.
 // 2: the player's own payment (promos), not what reached Beezie's account.
-const STATE_VERSION = 2;
+// 3: only Beezie's promo wallet counts as a discount; credits are full price.
+const STATE_VERSION = 3;
 // A payment waits this long for its play to show in the feed before it is dropped.
 const PENDING_FOR_S = 8 * 3600;
 // The slabs come out within this many seconds after the payment.
@@ -132,11 +138,11 @@ for (const s of todo) {
       }
       return total / 1e6;
     };
-    // The play's price is what reached Beezie's play account, less whatever someone
-    // other than the player put in (a promo's share, or all of it for a free play).
+    // The play's price is what reached Beezie's play account, less the promo
+    // wallet's share (part of it for a promo, all of it for a free play).
     const toBeezie = change((b) => keys[b.accountIndex] === PAY_ACCOUNT);
-    const fromOthers = -change((b) => b.owner && b.owner !== play.player && keys[b.accountIndex] !== PAY_ACCOUNT);
-    const paid = Math.max(0, Math.round((toBeezie - Math.max(0, fromOthers)) * 1e6) / 1e6);
+    const fromPromo = -change((b) => PROMO_WALLETS.has(b.owner));
+    const paid = Math.max(0, Math.round((toBeezie - Math.max(0, fromPromo)) * 1e6) / 1e6);
     // A free play is still a play: kept at $0.
     if (toBeezie > 0) payments.push({ wallet: play.player, machine: play.machine, t: play.time, paid });
   }
