@@ -21,7 +21,7 @@
 // Without HELIUS_RPC_URL it does nothing, so the workflow runs as before.
 //
 // PAID_BACKFILL_FROM=<ISO time>: where a fresh start begins reading (otherwise six
-// hours back). A long stretch is read 1,500 payments a run, oldest first, until
+// hours back). A long stretch is read 500 payments a run, oldest first, until
 // caught up; each payment is read once.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -50,7 +50,9 @@ const PENDING_FOR_S = 8 * 3600;
 // The slabs come out within this many seconds after the payment.
 const MATCH_BEFORE_S = 300;
 const MATCH_AFTER_S = 15;
-const MAX_TX_READS = 1500; // per run, so a long gap catches up over a few runs
+// Per run. A run must finish well inside the five minutes between runs (about two
+// minutes at this size), or the next run starts from progress not yet saved.
+const MAX_TX_READS = 500;
 const REQUESTS_PER_SECOND = 8; // under the plan's 10
 
 const STATE = new URL('./kv/paid_state.json', import.meta.url);
