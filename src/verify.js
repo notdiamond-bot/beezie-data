@@ -125,17 +125,21 @@ export function readPlayTx(sig, result) {
     ...(result.meta?.loadedAddresses?.writable || []),
     ...(result.meta?.loadedAddresses?.readonly || []),
   ];
-  const ix = message.instructions.find((i) => keys[i.programIdIndex] === PROGRAM);
-  if (!ix) return null;
-  const data = base58Decode(ix.data);
-  const accounts = ix.accounts.map((i) => keys[i]);
-  const head = { sig, slot: result.slot, time: result.blockTime, machine: accounts[0] };
-  const disc = toHex(data.subarray(0, 8));
-  if (disc === COMMIT && data.length >= 41) {
-    return { kind: 'commit', ...head, state: accounts[2], player: accounts[7], commitment: toHex(data.subarray(9, 41)) };
-  }
-  if (disc === REVEAL && data.length >= 41) {
-    return { kind: 'reveal', ...head, state: accounts[1], player: accounts[2], seed: toHex(data.subarray(9, 41)), assets: accounts.slice(10) };
+  // A play transaction can carry other steps of the claw program before the one
+  // that matters (a promo play opens with "prefund play rent"), so every one of
+  // the program's instructions is looked at, not just the first.
+  for (const ix of message.instructions) {
+    if (keys[ix.programIdIndex] !== PROGRAM) continue;
+    const data = base58Decode(ix.data);
+    const accounts = ix.accounts.map((i) => keys[i]);
+    const head = { sig, slot: result.slot, time: result.blockTime, machine: accounts[0] };
+    const disc = toHex(data.subarray(0, 8));
+    if (disc === COMMIT && data.length >= 41) {
+      return { kind: 'commit', ...head, state: accounts[2], player: accounts[7], commitment: toHex(data.subarray(9, 41)) };
+    }
+    if (disc === REVEAL && data.length >= 41) {
+      return { kind: 'reveal', ...head, state: accounts[1], player: accounts[2], seed: toHex(data.subarray(9, 41)), assets: accounts.slice(10) };
+    }
   }
   return null;
 }

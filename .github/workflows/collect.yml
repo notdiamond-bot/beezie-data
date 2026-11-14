@@ -26,6 +26,8 @@ jobs:
         timeout-minutes: 8
         env:
           HELIUS_RPC_URL: ${{ secrets.HELIUS_RPC_URL }}
+          # Where a fresh start begins reading: midnight Pacific, Nov 13.
+          PAID_BACKFILL_FROM: '2026-11-13T08:00:00Z'
       # The Data tab's numbers: counts only pulls it hasn't counted yet. A failure here
       # must not stop the counts so far being saved.
       - run: node build-stats.mjs

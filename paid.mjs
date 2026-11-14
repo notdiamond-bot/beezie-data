@@ -3,10 +3,12 @@
 //   HELIUS_RPC_URL=<solana rpc> node paid.mjs
 //
 // Every Solana claw play opens with a "commit" transaction on Beezie's claw
-// program, in which the player sends USDC to Beezie's play wallet. That amount is
-// the real price of the play: the claw's list price, or less with a promo. Beezie's
-// pull feed only knows the list price, so the Data tab and the Claw Log used to
-// assume it for every play.
+// program, which pays Beezie's play wallet the claw's list price. With a promo,
+// that list price is split: the player pays part from their own wallet and a
+// Beezie promo wallet pays the rest (a $30 Wildcard: $22.50 from the player,
+// $7.50 from Beezie). What left the player's own wallet is the real price of the
+// play, so that is what is kept. Beezie's pull feed only knows the list price, so
+// the Data tab and the Claw Log used to assume it for every play.
 //
 // Each run reads the payments that landed since the last run (one signature list
 // call per thousand, one transaction read each: about 4,000 credits a day), matches
@@ -17,6 +19,10 @@
 // Files: kv/paid/<day>.json, kv/paid_state.json. The summaries step reads them.
 //
 // Without HELIUS_RPC_URL it does nothing, so the workflow runs as before.
+//
+// PAID_BACKFILL_FROM=<ISO time>: where a fresh start begins reading (otherwise six
+// hours back). A long stretch is read 1,500 payments a run, oldest first, until
+// caught up; each payment is read once.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fetchAllClaws, CHAIN_KEYS } from './src/chains.js';
@@ -35,6 +41,10 @@ const PAY_ACCOUNT = '4GwfrCbTqFq6fGGbunX5jcxTdb2M2EoPYBcU5HZYuJ6Z';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 // A first run looks back this far; after that, only what is new.
 const FIRST_LOOKBACK_S = 6 * 3600;
+const BACKFILL_FROM = process.env.PAID_BACKFILL_FROM ? Date.parse(process.env.PAID_BACKFILL_FROM) / 1000 : null;
+// Bumped when what is measured changes: the state and day files are then rebuilt.
+// 2: the player's own payment (promos), not what reached Beezie's account.
+const STATE_VERSION = 2;
 // A payment waits this long for its play to show in the feed before it is dropped.
 const PENDING_FOR_S = 8 * 3600;
 // The slabs come out within this many seconds after the payment.
@@ -73,8 +83,12 @@ async function rpc(method, params) {
   throw new Error(`${method}: the node kept refusing`);
 }
 
-const state = readJson(STATE, { lastSig: null, pending: [], recent: {} });
+const stored = readJson(STATE, null);
+const fresh = !stored || stored.version !== STATE_VERSION;
+const state = fresh ? { version: STATE_VERSION, lastSig: null, pending: [], recent: {}, from: null } : stored;
 state.recent ||= {};
+// A fresh start reads from PAID_BACKFILL_FROM (or six hours back).
+if (fresh) state.from = BACKFILL_FROM || Math.round(Date.now() / 1000 - FIRST_LOOKBACK_S);
 const started = Date.now();
 
 // 1. New payment signatures, newest first, back to the last one handled.
@@ -88,10 +102,10 @@ for (let page = 0; page < 20; page += 1) {
   if (!batch.length) break;
   sigs.push(...batch.filter((s) => !s.err));
   before = batch[batch.length - 1].signature;
-  if (!state.lastSig && batch[batch.length - 1].blockTime < Date.now() / 1000 - FIRST_LOOKBACK_S) break;
+  if (!state.lastSig && batch[batch.length - 1].blockTime < state.from) break;
   if (batch.length < 1000) break;
 }
-const firstCutoff = state.lastSig ? 0 : Date.now() / 1000 - FIRST_LOOKBACK_S;
+const firstCutoff = state.lastSig ? 0 : state.from;
 // Oldest first; a long gap is worked through over several runs.
 const todo = sigs.filter((s) => s.blockTime >= firstCutoff).reverse().slice(0, MAX_TX_READS);
 
@@ -106,11 +120,23 @@ for (const s of todo) {
       ...(tx.meta?.loadedAddresses?.writable || []),
       ...(tx.meta?.loadedAddresses?.readonly || []),
     ];
-    const at = (balances) => balances.find((b) => keys[b.accountIndex] === PAY_ACCOUNT && b.mint === USDC);
-    const pre = Number(at(tx.meta.preTokenBalances || [])?.uiTokenAmount.amount || 0);
-    const post = Number(at(tx.meta.postTokenBalances || [])?.uiTokenAmount.amount || 0);
-    const paid = (post - pre) / 1e6;
-    if (paid > 0) payments.push({ wallet: play.player, machine: play.machine, t: play.time, paid });
+    // USDC change on the accounts matching `pick`, in dollars.
+    const change = (pick) => {
+      let total = 0;
+      for (const b of tx.meta.postTokenBalances || []) {
+        if (b.mint !== USDC || !pick(b)) continue;
+        const before = (tx.meta.preTokenBalances || []).find((x) => x.accountIndex === b.accountIndex);
+        total += Number(b.uiTokenAmount.amount) - Number(before?.uiTokenAmount.amount || 0);
+      }
+      return total / 1e6;
+    };
+    // The play's price is what reached Beezie's play account, less whatever someone
+    // other than the player put in (a promo's share, or all of it for a free play).
+    const toBeezie = change((b) => keys[b.accountIndex] === PAY_ACCOUNT);
+    const fromOthers = -change((b) => b.owner && b.owner !== play.player && keys[b.accountIndex] !== PAY_ACCOUNT);
+    const paid = Math.max(0, Math.round((toBeezie - Math.max(0, fromOthers)) * 1e6) / 1e6);
+    // A free play is still a play: kept at $0.
+    if (toBeezie > 0) payments.push({ wallet: play.player, machine: play.machine, t: play.time, paid });
   }
   state.lastSig = s.signature;
 }
@@ -118,7 +144,14 @@ for (const s of todo) {
 // 3. Match payments (new and still waiting) to plays in Beezie's feed.
 const { claws } = await fetchAllClaws({ chainKeys: CHAIN_KEYS.filter((k) => k === 'solana'), headers: BEEZIE_HEADERS });
 const byMachine = Object.fromEntries(claws.filter((c) => c.contractAddress).map((c) => [c.contractAddress, c]));
-const waiting = [...state.pending, ...payments].filter((p) => p.t > Date.now() / 1000 - PENDING_FOR_S);
+// While catching up from far back, a payment may be older than the usual wait.
+// (back to where reading began, but never more than a day).
+const now = Date.now() / 1000;
+const waitSince = Math.min(now - PENDING_FOR_S, Math.max(state.from || 0, now - 26 * 3600));
+const waiting = [...state.pending, ...payments].filter((p) => p.t > waitSince);
+const oldest = Math.min(...waiting.map((p) => p.t), Date.now() / 1000);
+// The busiest claw needs a deep page to reach back most of a day.
+const feedSize = Date.now() / 1000 - oldest > 3 * 3600 ? 8000 : 2000;
 const wanted = [...new Set(waiting.map((p) => p.machine))].filter((m) => byMachine[m]);
 
 // The feed's plays: one per wallet and moment, with how many slabs.
@@ -126,7 +159,7 @@ const playsByMachine = {};
 await Promise.all(
   wanted.map(async (machine) => {
     const claw = byMachine[machine];
-    const pulls = (await recentClawPulls(claw, 2000).catch(() => null)) || [];
+    const pulls = (await recentClawPulls(claw, feedSize).catch(() => null)) || [];
     const plays = new Map();
     for (const p of pulls) {
       const id = `${p.wallet}|${p.at}`;
@@ -138,7 +171,8 @@ await Promise.all(
 );
 
 const days = {};
-const dayFile = (day) => (days[day] ||= readJson(new URL(`${day}.json`, DAY_DIR), { claws: {}, plays: {} }));
+const dayFile = (day) =>
+  (days[day] ||= fresh ? { claws: {}, plays: {} } : readJson(new URL(`${day}.json`, DAY_DIR), { claws: {}, plays: {} }));
 // Plays already paired with a payment (kept a few hours, which is all a match can span).
 const used = new Set(Object.keys(state.recent));
 const stillWaiting = [];
@@ -180,9 +214,13 @@ for (const pay of waiting.sort((a, b) => a.t - b.t)) {
   }
 }
 
+if (fresh) {
+  for (let t = state.from; t <= Date.now() / 1000; t += 86400) dayFile(dayOf(t));
+  dayFile(dayOf(Date.now() / 1000));
+}
 for (const [day, file] of Object.entries(days)) writeFileSync(new URL(`${day}.json`, DAY_DIR), JSON.stringify(file));
 state.pending = stillWaiting;
-const keepSince = Date.now() - 8 * 3_600_000;
+const keepSince = Date.now() - 26 * 3_600_000;
 state.recent = Object.fromEntries(Object.entries(state.recent).filter(([, at]) => at > keepSince));
 writeFileSync(STATE, JSON.stringify(state));
 console.log(
