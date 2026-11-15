@@ -40,10 +40,11 @@ if (!RPC) {
 // Beezie's USDC account that receives claw play payments.
 const PAY_ACCOUNT = '4GwfrCbTqFq6fGGbunX5jcxTdb2M2EoPYBcU5HZYuJ6Z';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-// Beezie's promo wallet: money from it is a discount. (Its credits wallet,
-// 9vLHQPNqwXYA98ExNHgRHSHUxXQZuRD3VCEhUEAqKZXh, pays for plays bought with credits:
-// not a discount.)
+// Beezie's promo wallet: money from it is a discount.
 const PROMO_WALLETS = new Set(['4WdHzBgh7NbpyZKoYVAEyNr9wvf2vDvCnrgoFsKDDUuZ']);
+// Its credits wallet pays for plays bought with Beezie credits: not a discount,
+// but noted, so the Claw Log can mark the play as paid with credits.
+const CREDITS_WALLET = '9vLHQPNqwXYA98ExNHgRHSHUxXQZuRD3VCEhUEAqKZXh';
 // A first run looks back this far; after that, only what is new.
 const FIRST_LOOKBACK_S = 6 * 3600;
 const BACKFILL_FROM = process.env.PAID_BACKFILL_FROM ? Date.parse(process.env.PAID_BACKFILL_FROM) / 1000 : null;
@@ -144,7 +145,8 @@ for (const s of todo) {
     const fromPromo = -change((b) => PROMO_WALLETS.has(b.owner));
     const paid = Math.max(0, Math.round((toBeezie - Math.max(0, fromPromo)) * 1e6) / 1e6);
     // A free play is still a play: kept at $0.
-    if (toBeezie > 0) payments.push({ wallet: play.player, machine: play.machine, t: play.time, paid });
+    const credits = Math.max(0, Math.round(-change((b) => b.owner === CREDITS_WALLET) * 100) / 100);
+    if (toBeezie > 0) payments.push({ wallet: play.player, machine: play.machine, t: play.time, paid, ...(credits ? { credits } : {}) });
   }
   state.lastSig = s.signature;
 }
@@ -187,6 +189,7 @@ const stillWaiting = [];
 const why = { noClaw: 0, noFeed: 0, noPlay: 0 };
 let matched = 0;
 let discounted = 0;
+let withCredits = 0;
 for (const pay of waiting.sort((a, b) => a.t - b.t)) {
   const claw = byMachine[pay.machine];
   const plays = playsByMachine[pay.machine];
@@ -215,10 +218,13 @@ for (const pay of waiting.sort((a, b) => a.t - b.t)) {
   totals.plays += 1;
   totals.list += list;
   totals.paid += pay.paid;
-  // Only the plays that differ from list are kept one by one; the rest are in the totals.
-  if (Math.abs(list - pay.paid) > 0.005) {
-    file.plays[id] = [Math.round(pay.paid * 100) / 100, list, play.n];
-    discounted += 1;
+  // Only the plays that differ from list, or were paid with credits (a fourth
+  // figure: how much), are kept one by one; the rest are in the totals.
+  const below = Math.abs(list - pay.paid) > 0.005;
+  if (below || pay.credits) {
+    file.plays[id] = [Math.round(pay.paid * 100) / 100, list, play.n, ...(pay.credits ? [pay.credits] : [])];
+    if (below) discounted += 1;
+    if (pay.credits) withCredits += 1;
   }
 }
 
@@ -232,6 +238,6 @@ const keepSince = Date.now() - 26 * 3_600_000;
 state.recent = Object.fromEntries(Object.entries(state.recent).filter(([, at]) => at > keepSince));
 writeFileSync(STATE, JSON.stringify(state));
 console.log(
-  `actual prices: ${todo.length} payments read (${payments.length} plays), ${matched} matched, ${discounted} below list, ` +
+  `actual prices: ${todo.length} payments read (${payments.length} plays), ${matched} matched, ${discounted} below list, ${withCredits} with credits, ` +
     `${stillWaiting.length} waiting ${JSON.stringify(why)}; ${credits} credits, ${Math.round((Date.now() - started) / 1000)}s`
 );

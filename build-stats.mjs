@@ -180,12 +180,13 @@ write('summary-24h.json', {
   summary: rollingLean,
 });
 // Every play from the last eight days whose real price differed from list, for the
-// Claw Log: { '<claw>|<wallet>|<at>': [paid, list, slabs] }. Small: only the exceptions.
+// Claw Log: { '<claw>|<wallet>|<at>': [paid, list, slabs, credits?] }. Small: only the
+// exceptions (below list, or paid with Beezie credits: the fourth figure).
 const recentDays = Array.from({ length: 8 }, (_, i) => dayOf(now - i * DAY));
 write('paid-recent.json', {
   updatedAt: now,
   from: paidSince([...recentDays].reverse()),
-  plays: Object.fromEntries(paidPlays(recentDays).map((p) => [p.id, [p.paid, p.list, p.n]])),
+  plays: Object.fromEntries(paidPlays(recentDays).map((p) => [p.id, [p.paid, p.list, p.n, ...(p.credits ? [p.credits] : [])]])),
 });
 console.log(`done in ${Math.round((Date.now() - started) / 1000)}s`);
 process.exit(0);

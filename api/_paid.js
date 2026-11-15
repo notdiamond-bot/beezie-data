@@ -1,7 +1,8 @@
 // Actual prices (see paid.mjs) laid over the counted summaries.
 //
 // The counting assumes every pull cost the claw's list price. paid.mjs keeps,
-// per UTC day, each play whose real price differed. Here those differences are
+// per UTC day, each play whose real price differed (and each paid with Beezie
+// credits, which is full price: nothing to take off). Here those differences are
 // taken off revenue: the period's total, each day's (and its chain's share), each
 // claw's, and the take and margin that follow from them. Players' own spend is
 // left as counted; a player's discount is shown on the Claw Log.
@@ -21,8 +22,8 @@ export function readPaidDay(day) {
 const sideOf = (wallet) => (wallet === SPECULATE_WALLET ? 'elysium' : wallet === ARENA_WALLET ? 'devfun' : null);
 
 /**
- * Every play below (or above) list across `days` (UTC day strings), as
- * { id, key, rowKey, chain, wallet, at, paid, list, n, day }, optionally only those
+ * Every play kept across `days` (UTC day strings): below (or above) list, or paid
+ * with credits. As { id, key, rowKey, chain, wallet, at, paid, list, n, credits, day }, optionally only those
  * at or after `since` (ms).
  */
 export function paidPlays(days, since = 0) {
@@ -30,12 +31,12 @@ export function paidPlays(days, since = 0) {
   for (const day of days) {
     const file = readPaidDay(day);
     if (!file) continue;
-    for (const [id, [paid, list, n]] of Object.entries(file.plays || {})) {
+    for (const [id, [paid, list, n, credits = 0]] of Object.entries(file.plays || {})) {
       const [key, wallet, atText] = id.split('|');
       const at = Number(atText);
       if (at < since) continue;
       const side = sideOf(wallet);
-      out.push({ id, key, rowKey: side ? `${key}@${side}` : key, chain: side || key.split(':')[0], wallet, at, paid, list, n, day });
+      out.push({ id, key, rowKey: side ? `${key}@${side}` : key, chain: side || key.split(':')[0], wallet, at, paid, list, n, credits, day });
     }
   }
   return out;
@@ -46,6 +47,8 @@ export const paidSince = (days) => days.find((day) => readPaidDay(day)) || null;
 
 /** Apply the differences to a summary (as summariseDays returns it), in place. */
 export function applyPaid(summary, plays) {
+  // Plays kept only for being paid with credits cost list price: nothing to apply.
+  plays = plays.filter((p) => Math.abs(p.list - p.paid) > 0.005);
   if (!plays.length) return summary;
   let total = 0;
   for (const p of plays) {
