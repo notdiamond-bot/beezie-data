@@ -14,9 +14,12 @@ const now = Date.now();
 const dayOf = (at) => new Date(at).toISOString().slice(0, 10);
 const recentDays = Array.from({ length: 8 }, (_, i) => dayOf(now - i * DAY));
 
-mkdirSync(new URL('./data/', import.meta.url), { recursive: true });
+// Where to write it: the workflow's fast loop names a file of its own, so it never
+// writes over the copy build-stats.mjs is making.
+const out = process.argv[2] || new URL('./data/paid-recent.json', import.meta.url);
+if (!process.argv[2]) mkdirSync(new URL('./data/', import.meta.url), { recursive: true });
 writeFileSync(
-  new URL('./data/paid-recent.json', import.meta.url),
+  out,
   JSON.stringify({
     updatedAt: now,
     from: paidSince([...recentDays].reverse()),

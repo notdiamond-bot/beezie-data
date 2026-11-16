@@ -2,8 +2,8 @@
 # Publishes data/paid-recent.json as ONE commit on the `paid` branch, replaced each
 # time (no history). Needs TOKEN and GITHUB_REPOSITORY, as the workflow gives them.
 set -euo pipefail
-node paid-recent.mjs
-rm -rf /tmp/paid && mkdir -p /tmp/paid/data && cp data/paid-recent.json /tmp/paid/data/
+rm -rf /tmp/paid && mkdir -p /tmp/paid/data
+node paid-recent.mjs /tmp/paid/data/paid-recent.json
 cd /tmp/paid
 git init -q -b paid
 git config user.name "beezie-data[bot]"

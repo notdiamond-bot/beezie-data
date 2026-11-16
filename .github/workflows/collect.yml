@@ -20,15 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # What players actually paid (promos, free plays, Beezie credits), read from
-      # Solana, for the Claw Log's labels. Read once a minute for the first four
-      # minutes of the run and published each time to the `paid` branch, so a label
-      # shows about a minute after the play instead of after the next run.
-      # PAID_EVERY_S sets the pace: each read costs one Helius signature call, so
-      # a shorter gap spends more credits. Needs the HELIUS_RPC_URL secret; without
+      # Solana, for the Claw Log's labels. Read now, then again every PAID_EVERY_S
+      # seconds in the background for as long as the summaries step takes (it can
+      # be minutes), publishing to the `paid` branch each time: a label shows about
+      # a minute after the play. Each read costs one Helius signature call, so a
+      # shorter gap spends more credits. Needs the HELIUS_RPC_URL secret; without
       # it paid.mjs does nothing.
-      - name: Actual prices, every minute
+      - name: Actual prices, now and every minute
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: 3
         env:
           HELIUS_RPC_URL: ${{ secrets.HELIUS_RPC_URL }}
           # Where a fresh start begins reading: midnight Pacific, Nov 13.
@@ -36,22 +36,18 @@ jobs:
           PAID_EVERY_S: '60'
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          start=$(date +%s)
-          for i in 0 1 2 3; do
-            node paid.mjs || true
-            ./publish-paid.sh || true
-            if [ "$i" -lt 3 ]; then
-              wait=$(( start + PAID_EVERY_S * (i + 1) - $(date +%s) ))
-              if [ "$wait" -gt 0 ]; then sleep "$wait"; fi
-            fi
-          done
+          node paid.mjs || true
+          ./publish-paid.sh || true
+          rm -f /tmp/paid-stop /tmp/paid-done
+          nohup ./paid-loop.sh > /tmp/paid-loop.log 2>&1 &
       # The Data tab's numbers: counts only pulls it hasn't counted yet. A failure here
       # must not stop the counts so far being saved.
       - run: node build-stats.mjs
         continue-on-error: true
         timeout-minutes: 15
-      # One more read after the numbers, so the minute they took isn't a gap.
-      - name: Actual prices, once more
+      # Stop the background reads before anything is saved, then read once more.
+      - name: Actual prices, last read
+        if: always()
         continue-on-error: true
         timeout-minutes: 3
         env:
@@ -59,6 +55,9 @@ jobs:
           PAID_BACKFILL_FROM: '2026-11-13T08:00:00Z'
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          touch /tmp/paid-stop
+          for i in $(seq 1 90); do [ -f /tmp/paid-done ] && break; sleep 1; done
+          cat /tmp/paid-loop.log || true
           node paid.mjs || true
           ./publish-paid.sh || true
       - name: Save

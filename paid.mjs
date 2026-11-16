@@ -25,11 +25,19 @@
 // hours back). A long stretch is read 500 payments a run, oldest first, until
 // caught up; each payment is read once.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { fetchAllClaws, CHAIN_KEYS } from './src/chains.js';
 import { BEEZIE_HEADERS } from './api/_headers.js';
 import { recentClawPulls } from './api/_pulls.js';
 import { readPlayTx } from './src/verify.js';
+
+// Written beside the file and moved into place, so the summaries step (running at
+// the same time) never reads half a file.
+const writeWhole = (url, text) => {
+  const tmp = new URL(`${url.href}.tmp`);
+  writeFileSync(tmp, text);
+  renameSync(tmp, url);
+};
 
 const RPC = process.env.HELIUS_RPC_URL;
 if (!RPC) {
@@ -232,11 +240,11 @@ if (fresh) {
   for (let t = state.from; t <= Date.now() / 1000; t += 86400) dayFile(dayOf(t));
   dayFile(dayOf(Date.now() / 1000));
 }
-for (const [day, file] of Object.entries(days)) writeFileSync(new URL(`${day}.json`, DAY_DIR), JSON.stringify(file));
+for (const [day, file] of Object.entries(days)) writeWhole(new URL(`${day}.json`, DAY_DIR), JSON.stringify(file));
 state.pending = stillWaiting;
 const keepSince = Date.now() - 26 * 3_600_000;
 state.recent = Object.fromEntries(Object.entries(state.recent).filter(([, at]) => at > keepSince));
-writeFileSync(STATE, JSON.stringify(state));
+writeWhole(STATE, JSON.stringify(state));
 console.log(
   `actual prices: ${todo.length} payments read (${payments.length} plays), ${matched} matched, ${discounted} below list, ${withCredits} with credits, ` +
     `${stillWaiting.length} waiting ${JSON.stringify(why)}; ${credits} credits, ${Math.round((Date.now() - started) / 1000)}s`
