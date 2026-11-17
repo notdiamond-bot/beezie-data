@@ -30,6 +30,7 @@ import { fetchAllClaws, CHAIN_KEYS } from './src/chains.js';
 import { BEEZIE_HEADERS } from './api/_headers.js';
 import { recentClawPulls } from './api/_pulls.js';
 import { readPlayTx } from './src/verify.js';
+import { findNewPayAccounts } from './payAccounts.mjs';
 
 // Written beside the file and moved into place, so the summaries step (running at
 // the same time) never reads half a file.
@@ -46,7 +47,16 @@ if (!RPC) {
 }
 
 // Beezie's USDC account that receives claw play payments.
-const PAY_ACCOUNT = '4GwfrCbTqFq6fGGbunX5jcxTdb2M2EoPYBcU5HZYuJ6Z';
+const OLD_PAY_ACCOUNT = '4GwfrCbTqFq6fGGbunX5jcxTdb2M2EoPYBcU5HZYuJ6Z';
+// Beezie's USDC accounts that receive claw play payments, each with when it began
+// (unix seconds): the first was used until about 16:49 UTC on Nov 16, 2026, when
+// payments moved to the second. Each is read from its own last signature, and a
+// new one from its start. Any further move is found by itself (see below) and
+// kept in the state file; it can be written in here afterwards.
+const PAY_ACCOUNTS = [
+  { account: OLD_PAY_ACCOUNT, since: 0 },
+  { account: '7WNczFwEYSrQSG7nWfDyJnVTSy3wB8PG8Ky99f4DReva', since: Date.parse('2026-11-16T16:40:00Z') / 1000 },
+];
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 // Beezie's promo wallet: money from it is a discount.
 const PROMO_WALLETS = new Set(['4WdHzBgh7NbpyZKoYVAEyNr9wvf2vDvCnrgoFsKDDUuZ']);
@@ -104,27 +114,62 @@ const stored = readJson(STATE, null);
 const fresh = !stored || stored.version !== STATE_VERSION;
 const state = fresh ? { version: STATE_VERSION, lastSig: null, pending: [], recent: {}, from: null } : stored;
 state.recent ||= {};
+// The last signature handled, per payment account (the old state kept one, for
+// the first account).
+state.lastSigs ||= state.lastSig ? { [OLD_PAY_ACCOUNT]: state.lastSig } : {};
+delete state.lastSig;
+
+// 0. Has Beezie moved its payments again? When no payment has landed for ten
+// minutes (and once an hour regardless), read a few of the newest plays on the
+// claw program and see where their money went. An account not known yet is read
+// from then on, from when the known ones went quiet. About ten credits a check.
+state.payAccounts ||= [];
+const accounts = () => [...PAY_ACCOUNTS, ...state.payAccounts];
+{
+  const nowS = Date.now() / 1000;
+  const sinceCheck = nowS - (state.payCheckAt || 0);
+  const quiet = nowS - (state.lastPaymentAt || 0) > 600;
+  if ((quiet && sinceCheck > 600) || sinceCheck > 3600) {
+    state.payCheckAt = Math.round(nowS);
+    const known = new Set(accounts().map((p) => p.account));
+    const { commits, found } = await findNewPayAccounts(rpc, known, { notOwners: new Set([...PROMO_WALLETS, CREDITS_WALLET]) }).catch((e) => {
+      console.log(`payment account check failed: ${e.message}`);
+      return { commits: 0, found: [] };
+    });
+    for (const f of found) {
+      const since = Math.round(Math.min(f.firstAt, state.lastPaymentAt || f.firstAt) - 600);
+      state.payAccounts.push({ account: f.account, owner: f.owner, since, foundAt: state.payCheckAt });
+      console.log(`NEW PAYMENT ACCOUNT ${f.account} (owner ${f.owner}), seen in ${f.seen} of ${commits} recent plays; reading it from ${new Date(since * 1000).toISOString()}`);
+    }
+    if (!found.length) console.log(`payment accounts checked: ${commits} recent plays, all to known accounts`);
+  }
+}
+const PAYS = new Set(accounts().map((p) => p.account));
 // A fresh start reads from PAID_BACKFILL_FROM (or six hours back).
 if (fresh) state.from = BACKFILL_FROM || Math.round(Date.now() / 1000 - FIRST_LOOKBACK_S);
 const started = Date.now();
 
-// 1. New payment signatures, newest first, back to the last one handled.
+// 1. New payment signatures on each account, back to the last one handled there
+// (or, for an account not read before, to when it began).
 const sigs = [];
-let before;
-for (let page = 0; page < 20; page += 1) {
-  const batch = await rpc('getSignaturesForAddress', [
-    PAY_ACCOUNT,
-    { limit: 1000, ...(before ? { before } : {}), ...(state.lastSig ? { until: state.lastSig } : {}) },
-  ]);
-  if (!batch.length) break;
-  sigs.push(...batch.filter((s) => !s.err));
-  before = batch[batch.length - 1].signature;
-  if (!state.lastSig && batch[batch.length - 1].blockTime < state.from) break;
-  if (batch.length < 1000) break;
+for (const { account, since } of accounts()) {
+  const last = state.lastSigs[account] || null;
+  const from = Math.max(state.from || 0, since);
+  let before;
+  for (let page = 0; page < 20; page += 1) {
+    const batch = await rpc('getSignaturesForAddress', [
+      account,
+      { limit: 1000, ...(before ? { before } : {}), ...(last ? { until: last } : {}) },
+    ]);
+    if (!batch.length) break;
+    sigs.push(...batch.filter((s) => !s.err && (last || s.blockTime >= from)).map((s) => ({ ...s, account })));
+    before = batch[batch.length - 1].signature;
+    if (!last && batch[batch.length - 1].blockTime < from) break;
+    if (batch.length < 1000) break;
+  }
 }
-const firstCutoff = state.lastSig ? 0 : state.from;
-// Oldest first; a long gap is worked through over several runs.
-const todo = sigs.filter((s) => s.blockTime >= firstCutoff).reverse().slice(0, MAX_TX_READS);
+// Oldest first across the accounts; a long gap is worked through over several runs.
+const todo = sigs.sort((a, b) => a.blockTime - b.blockTime).slice(0, MAX_TX_READS);
 
 // 2. Read each: a claw commit, and what reached Beezie's account.
 const payments = [];
@@ -149,15 +194,17 @@ for (const s of todo) {
     };
     // The play's price is what reached Beezie's play account, less the promo
     // wallet's share (part of it for a promo, all of it for a free play).
-    const toBeezie = change((b) => keys[b.accountIndex] === PAY_ACCOUNT);
+    const toBeezie = change((b) => PAYS.has(keys[b.accountIndex]));
     const fromPromo = -change((b) => PROMO_WALLETS.has(b.owner));
     const paid = Math.max(0, Math.round((toBeezie - Math.max(0, fromPromo)) * 1e6) / 1e6);
     // A free play is still a play: kept at $0.
     const credits = Math.max(0, Math.round(-change((b) => b.owner === CREDITS_WALLET) * 100) / 100);
     if (toBeezie > 0) payments.push({ wallet: play.player, machine: play.machine, t: play.time, paid, ...(credits ? { credits } : {}) });
   }
-  state.lastSig = s.signature;
+  state.lastSigs[s.account] = s.signature;
 }
+// When a payment last landed on a known account: what the check above watches.
+for (const p of payments) state.lastPaymentAt = Math.max(state.lastPaymentAt || 0, p.t);
 
 // 3. Match payments (new and still waiting) to plays in Beezie's feed.
 const { claws } = await fetchAllClaws({ chainKeys: CHAIN_KEYS.filter((k) => k === 'solana'), headers: BEEZIE_HEADERS });
