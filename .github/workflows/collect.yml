@@ -20,20 +20,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # What players actually paid (promos, free plays, Beezie credits), read from
-      # Solana, for the Claw Log's labels. Read now, then again every PAID_EVERY_S
+      # Solana, for the Claw Log's labels. Read now, then again every PAID_EVERY_S (30)
       # seconds in the background for as long as the summaries step takes (it can
       # be minutes), publishing to the `paid` branch each time: a label shows about
       # a minute after the play. Each read costs one Helius signature call, so a
       # shorter gap spends more credits. Needs the HELIUS_RPC_URL secret; without
       # it paid.mjs does nothing.
-      - name: Actual prices, now and every minute
+      - name: Actual prices and the Claw Log window, now and every 30 seconds
         continue-on-error: true
         timeout-minutes: 3
         env:
           HELIUS_RPC_URL: ${{ secrets.HELIUS_RPC_URL }}
           # Where a fresh start begins reading: midnight Pacific, Nov 13.
           PAID_BACKFILL_FROM: '2026-11-13T08:00:00Z'
-          PAID_EVERY_S: '60'
+          PAID_EVERY_S: '30'
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           node paid.mjs || true
