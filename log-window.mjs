@@ -5,9 +5,8 @@
 //   node log-window.mjs <out.json>
 //
 // The site reads it from the `paid` branch (published with the labels), and asks
-// Vercel only for what is newer, so this costs the site nothing. Paused claws
-// and Base are left out: Base has no live claws, and a paused claw's history
-// is already in what the site holds.
+// Vercel only for what is newer, so this costs the site nothing. Base is left
+// out: Beezie has no live claws there.
 
 import { writeFileSync } from 'node:fs';
 import { fetchAllClaws } from './src/chains.js';
@@ -26,7 +25,9 @@ const since = now - HOURS * 3_600_000;
 const usualImage = (blockchain, tokenId) => `https://images.beezie.com/${blockchain}/${tokenId}/4/original.webp`;
 
 const { claws } = await fetchAllClaws({ chainKeys: ['solana'], headers: BEEZIE_HEADERS });
-const live = (claws || []).filter((c) => !c.isPaused);
+// Every Solana claw, paused or not: Beezie pauses a claw while it restocks, and
+// its day of pulls must not vanish from the log meanwhile.
+const live = claws || [];
 
 const pulls = [];
 const last = {};
@@ -34,7 +35,7 @@ const failed = [];
 for (const claw of live) {
   let feed = null;
   for (const size of SIZES) {
-    feed = await recentClawPulls(claw, size, now).catch(() => null);
+    feed = await recentClawPulls(claw, size, now, { paused: claw.isPaused }).catch(() => null);
     if (!feed || feed.length < size || feed[feed.length - 1].at <= since) break;
   }
   if (!feed) {
