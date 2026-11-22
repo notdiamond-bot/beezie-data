@@ -18,7 +18,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      # The branch's newest commit, not the one current when this run was queued:
+      # a run that waited behind another would otherwise start from data already
+      # replaced, and its save would clash with the newer state files.
       - uses: actions/checkout@v5
+        with:
+          ref: main
       # What players actually paid (promos, free plays, Beezie credits), read from
       # Solana, for the Claw Log's labels. Read now, then again every PAID_EVERY_S (30)
       # seconds in the background for as long as the summaries step takes (it can
@@ -67,8 +72,12 @@ jobs:
           git add kv
           if git diff --cached --quiet; then echo "nothing new"; else
             git commit -m "counts $(date -u +%Y-%m-%dT%H:%MZ)"
-            git pull --rebase -q || true
-            git push
+            # Should another save still have landed first, this run's state is the
+            # older one: drop it (the next run reads again from the newer state).
+            if git pull --rebase -q; then git push; else
+              git rebase --abort
+              echo "::warning::a newer save landed first; this run's counts are skipped"
+            fi
           fi
       # The summaries go out as ONE commit on the `snapshots` branch, replaced each time,
       # so publishing them every run keeps no history and the repo stays small.
