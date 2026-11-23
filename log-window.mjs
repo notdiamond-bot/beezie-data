@@ -41,14 +41,16 @@ for (const claw of live) {
   const before = restockState.seen[claw.key];
   const now_ = { stock: claw.clawStockCount, restocking: Boolean(claw.restockStartedAt) };
   if (before && !now_.restocking && (before.restocking || now_.stock - before.stock >= RISE) && now_.stock > before.stock) {
+    // Noticed now, but it reopened since the last check: dated below from the
+    // first play after that check (or now, if nobody has played yet).
     restockState.last[claw.key] = now;
+    (restockState.dating ||= {})[claw.key] = before.at || now - 10 * 60_000;
     console.log(`restock: ${claw.key} ${before.stock} -> ${now_.stock}`);
   }
+  now_.at = now;
   // Mid-restock the count climbs as slabs go in; the cycle starts when it ends.
   restockState.seen[claw.key] = now_;
 }
-writeFileSync(RESTOCKS, JSON.stringify(restockState));
-
 const pulls = [];
 const last = {};
 const failed = [];
@@ -71,5 +73,13 @@ for (const claw of live) {
   }
 }
 pulls.sort((a, b) => b.at - a.at);
+// Date each restock still waiting by the first play after it reopened; it keeps
+// waiting (an hour at most) until someone plays.
+for (const [key, after] of Object.entries(restockState.dating || {})) {
+  const first = pulls.filter((p) => p.key === key && p.at > after).reduce((m, p) => Math.min(m, p.at), Infinity);
+  if (Number.isFinite(first)) restockState.last[key] = first;
+  if (Number.isFinite(first) || now - after > 3_600_000) delete restockState.dating[key];
+}
+writeFileSync(RESTOCKS, JSON.stringify(restockState));
 writeFileSync(out, JSON.stringify({ updatedAt: now, since, hours: HOURS, claws: live.map((c) => c.key), pulls, last, restocks: restockState.last, failed }));
 console.log(`log window: ${pulls.length} pulls over ${live.length} claws${failed.length ? `, failed ${failed.join(',')}` : ''}, ${Math.round((Date.now() - now) / 1000)}s`);
