@@ -8,7 +8,7 @@
 // Vercel only for what is newer, so this costs the site nothing. Base is left
 // out: Beezie has no live claws there.
 
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fetchAllClaws } from './src/chains.js';
 import { BEEZIE_HEADERS } from './api/_headers.js';
 import { recentClawPulls } from './api/_pulls.js';
@@ -28,6 +28,26 @@ const { claws } = await fetchAllClaws({ chainKeys: ['solana'], headers: BEEZIE_H
 // Every Solana claw, paused or not: Beezie pauses a claw while it restocks, and
 // its day of pulls must not vanish from the log meanwhile.
 const live = claws || [];
+
+// When each claw last restocked, kept here because the site's own store keeps
+// nothing between instances. A Wildcard or Gold claw is emptied and refilled:
+// Beezie marks it restocking meanwhile, and its stock jumps back up. A Grail+
+// claw (reusable) takes swapped slabs back in, so it never restocks.
+const RESTOCKS = new URL('./kv/restocks.json', import.meta.url);
+const RISE = 10;
+const restockState = existsSync(RESTOCKS) ? JSON.parse(readFileSync(RESTOCKS, 'utf8')) : { seen: {}, last: {} };
+for (const claw of live) {
+  if (claw.reusable) continue;
+  const before = restockState.seen[claw.key];
+  const now_ = { stock: claw.clawStockCount, restocking: Boolean(claw.restockStartedAt) };
+  if (before && !now_.restocking && (before.restocking || now_.stock - before.stock >= RISE) && now_.stock > before.stock) {
+    restockState.last[claw.key] = now;
+    console.log(`restock: ${claw.key} ${before.stock} -> ${now_.stock}`);
+  }
+  // Mid-restock the count climbs as slabs go in; the cycle starts when it ends.
+  restockState.seen[claw.key] = now_;
+}
+writeFileSync(RESTOCKS, JSON.stringify(restockState));
 
 const pulls = [];
 const last = {};
@@ -51,5 +71,5 @@ for (const claw of live) {
   }
 }
 pulls.sort((a, b) => b.at - a.at);
-writeFileSync(out, JSON.stringify({ updatedAt: now, since, hours: HOURS, claws: live.map((c) => c.key), pulls, last, failed }));
+writeFileSync(out, JSON.stringify({ updatedAt: now, since, hours: HOURS, claws: live.map((c) => c.key), pulls, last, restocks: restockState.last, failed }));
 console.log(`log window: ${pulls.length} pulls over ${live.length} claws${failed.length ? `, failed ${failed.join(',')}` : ''}, ${Math.round((Date.now() - now) / 1000)}s`);
