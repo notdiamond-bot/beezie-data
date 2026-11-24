@@ -29,26 +29,42 @@ const { claws } = await fetchAllClaws({ chainKeys: ['solana'], headers: BEEZIE_H
 // its day of pulls must not vanish from the log meanwhile.
 const live = claws || [];
 
-// When each claw last restocked, kept here because the site's own store keeps
+// When each claw restocked, kept here because the site's own store keeps
 // nothing between instances. A Wildcard or Gold claw is emptied and refilled:
 // Beezie marks it restocking meanwhile, and its stock jumps back up. A Grail+
 // claw (reusable) takes swapped slabs back in, so it never restocks.
+//
+// The refill is over when the restocking mark clears with stock well above the
+// lowest it reached beforehand. Measured from that low, not from the last
+// reading: on 24 Nov Wildcard reopened at 1,235 and was down to 1,233 by the
+// next check, which a comparison with the last reading missed.
 const RESTOCKS = new URL('./kv/restocks.json', import.meta.url);
 const RISE = 10;
+const HISTORY_MS = 8 * 86_400_000;
 const restockState = existsSync(RESTOCKS) ? JSON.parse(readFileSync(RESTOCKS, 'utf8')) : { seen: {}, last: {} };
+restockState.history ||= {};
+restockState.dating ||= {};
 for (const claw of live) {
   if (claw.reusable) continue;
   const before = restockState.seen[claw.key];
   const now_ = { stock: claw.clawStockCount, restocking: Boolean(claw.restockStartedAt) };
-  if (before && !now_.restocking && (before.restocking || now_.stock - before.stock >= RISE) && now_.stock > before.stock) {
-    // Noticed now, but it reopened since the last check: dated below from the
-    // first play after that check (or now, if nobody has played yet).
-    restockState.last[claw.key] = now;
-    (restockState.dating ||= {})[claw.key] = before.at || now - 10 * 60_000;
-    console.log(`restock: ${claw.key} ${before.stock} -> ${now_.stock}`);
+  // The lowest stock since the last refill; held through a restock, when the count climbs.
+  const low = Math.min(before?.low ?? before?.stock ?? now_.stock, now_.restocking ? Infinity : now_.stock);
+  now_.low = Number.isFinite(low) ? low : now_.stock;
+  // When the refill's slabs were first seen in stock. Not restockStartedAt: the
+  // mark goes on while the machine is still empty, and a pull can follow it.
+  if (now_.restocking && now_.stock - now_.low >= RISE) now_.landedAt = before?.landedAt ?? now;
+  if (before && !now_.restocking && now_.stock - (before.low ?? before.stock) >= RISE) {
+    // Dated by when its slabs were first seen (checks are a minute or two apart).
+    // If no check caught that, by the first play after the earlier check, below.
+    const at = before.landedAt ?? null;
+    restockState.last[claw.key] = at ?? now;
+    restockState.history[claw.key] = [...(restockState.history[claw.key] || []), at ?? now];
+    if (at === null) restockState.dating[claw.key] = before.at || now - 10 * 60_000;
+    now_.low = now_.stock;
+    console.log(`restock: ${claw.key} ${before.low ?? before.stock} -> ${now_.stock}`);
   }
   now_.at = now;
-  // Mid-restock the count climbs as slabs go in; the cycle starts when it ends.
   restockState.seen[claw.key] = now_;
 }
 const pulls = [];
@@ -77,9 +93,17 @@ pulls.sort((a, b) => b.at - a.at);
 // waiting (an hour at most) until someone plays.
 for (const [key, after] of Object.entries(restockState.dating || {})) {
   const first = pulls.filter((p) => p.key === key && p.at > after).reduce((m, p) => Math.min(m, p.at), Infinity);
-  if (Number.isFinite(first)) restockState.last[key] = first;
+  if (Number.isFinite(first)) {
+    // The provisional time in the history becomes the first play's.
+    const provisional = restockState.last[key];
+    restockState.history[key] = (restockState.history[key] || []).map((t) => (t === provisional ? first : t));
+    restockState.last[key] = first;
+  }
   if (Number.isFinite(first) || now - after > 3_600_000) delete restockState.dating[key];
 }
+for (const key of Object.keys(restockState.history)) {
+  restockState.history[key] = [...new Set(restockState.history[key])].filter((t) => t > now - HISTORY_MS).sort((a, b) => a - b);
+}
 writeFileSync(RESTOCKS, JSON.stringify(restockState));
-writeFileSync(out, JSON.stringify({ updatedAt: now, since, hours: HOURS, claws: live.map((c) => c.key), pulls, last, restocks: restockState.last, failed }));
+writeFileSync(out, JSON.stringify({ updatedAt: now, since, hours: HOURS, claws: live.map((c) => c.key), pulls, last, restocks: restockState.last, restockHistory: restockState.history, failed }));
 console.log(`log window: ${pulls.length} pulls over ${live.length} claws${failed.length ? `, failed ${failed.join(',')}` : ''}, ${Math.round((Date.now() - now) / 1000)}s`);
