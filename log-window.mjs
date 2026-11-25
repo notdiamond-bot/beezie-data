@@ -44,6 +44,7 @@ const HISTORY_MS = 8 * 86_400_000;
 const restockState = existsSync(RESTOCKS) ? JSON.parse(readFileSync(RESTOCKS, 'utf8')) : { seen: {}, last: {} };
 restockState.history ||= {};
 restockState.dating ||= {};
+const landed = {};
 for (const claw of live) {
   if (claw.reusable) continue;
   const before = restockState.seen[claw.key];
@@ -64,6 +65,9 @@ for (const claw of live) {
     now_.low = now_.stock;
     console.log(`restock: ${claw.key} ${before.low ?? before.stock} -> ${now_.stock}`);
   }
+  // Slabs are in but the restocking mark is still on: published now, not a check or
+  // more later when it clears. The time is the one recorded then.
+  if (now_.restocking && now_.landedAt) landed[claw.key] = now_.landedAt;
   now_.at = now;
   restockState.seen[claw.key] = now_;
 }
@@ -105,5 +109,11 @@ for (const key of Object.keys(restockState.history)) {
   restockState.history[key] = [...new Set(restockState.history[key])].filter((t) => t > now - HISTORY_MS).sort((a, b) => a - b);
 }
 writeFileSync(RESTOCKS, JSON.stringify(restockState));
-writeFileSync(out, JSON.stringify({ updatedAt: now, since, hours: HOURS, claws: live.map((c) => c.key), pulls, last, restocks: restockState.last, restockHistory: restockState.history, failed }));
+const shownHistory = { ...restockState.history };
+const shownLast = { ...restockState.last };
+for (const [key, at] of Object.entries(landed)) {
+  shownHistory[key] = [...(shownHistory[key] || []), at];
+  shownLast[key] = at;
+}
+writeFileSync(out, JSON.stringify({ updatedAt: now, since, hours: HOURS, claws: live.map((c) => c.key), pulls, last, restocks: shownLast, restockHistory: shownHistory, failed }));
 console.log(`log window: ${pulls.length} pulls over ${live.length} claws${failed.length ? `, failed ${failed.join(',')}` : ''}, ${Math.round((Date.now() - now) / 1000)}s`);
