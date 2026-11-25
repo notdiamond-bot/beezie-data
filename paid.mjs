@@ -31,6 +31,7 @@ import { BEEZIE_HEADERS } from './api/_headers.js';
 import { recentClawPulls } from './api/_pulls.js';
 import { readPlayTx } from './src/verify.js';
 import { findNewPayAccounts } from './payAccounts.mjs';
+import { entryFor, pairPays } from './matchPays.mjs';
 
 // Written beside the file and moved into place, so the summaries step (running at
 // the same time) never reads half a file.
@@ -72,12 +73,10 @@ const BACKFILL_FROM = process.env.PAID_BACKFILL_FROM ? Date.parse(process.env.PA
 const STATE_VERSION = 3;
 // A payment waits this long for its play to show in the feed before it is dropped.
 const PENDING_FOR_S = 8 * 3600;
-// The slabs come out within this many seconds after the payment.
-const MATCH_BEFORE_S = 300;
-const MATCH_AFTER_S = 15;
 // Per run. A run must finish well inside the five minutes between runs (about two
 // minutes at this size), or the next run starts from progress not yet saved.
 const MAX_TX_READS = 500;
+const READ_LAG_S = 20;
 const REQUESTS_PER_SECOND = 8; // under the plan's 10
 
 const STATE = new URL('./kv/paid_state.json', import.meta.url);
@@ -170,6 +169,9 @@ for (const { account, since } of accounts()) {
 }
 // Oldest first across the accounts; a long gap is worked through over several runs.
 const todo = sigs.sort((a, b) => a.blockTime - b.blockTime).slice(0, MAX_TX_READS);
+// Every payment up to here has been read (bar the node's own lag): a play later than
+// this may belong to a payment not read yet, so it waits for the next run.
+const readThrough = sigs.length > todo.length ? todo[todo.length - 1].blockTime : started / 1000 - READ_LAG_S;
 
 // 2. Read each: a claw commit, and what reached Beezie's account.
 const payments = [];
@@ -197,9 +199,10 @@ for (const s of todo) {
     const toBeezie = change((b) => PAYS.has(keys[b.accountIndex]));
     const fromPromo = -change((b) => PROMO_WALLETS.has(b.owner));
     const paid = Math.max(0, Math.round((toBeezie - Math.max(0, fromPromo)) * 1e6) / 1e6);
+    const list = Math.round(toBeezie * 1e6) / 1e6;
     // A free play is still a play: kept at $0.
     const credits = Math.max(0, Math.round(-change((b) => b.owner === CREDITS_WALLET) * 100) / 100);
-    if (toBeezie > 0) payments.push({ wallet: play.player, machine: play.machine, t: play.time, paid, ...(credits ? { credits } : {}) });
+    if (toBeezie > 0) payments.push({ wallet: play.player, machine: play.machine, t: play.time, paid, list, ...(credits ? { credits } : {}) });
   }
   state.lastSigs[s.account] = s.signature;
 }
@@ -245,20 +248,23 @@ const why = { noClaw: 0, noFeed: 0, noPlay: 0 };
 let matched = 0;
 let discounted = 0;
 let withCredits = 0;
+const playFor = new Map();
+for (const machine of wanted) {
+  const claw = byMachine[machine];
+  const free = (playsByMachine[machine] || []).filter((p) => p.at / 1000 <= readThrough && !used.has(`${claw.key}|${p.wallet}|${p.at}`));
+  const pays = waiting.filter((p) => p.machine === machine);
+  for (const [pay, play] of pairPays(pays, free, claw.priceUsd || 0)) playFor.set(pay, play);
+}
 for (const pay of waiting.sort((a, b) => a.t - b.t)) {
   const claw = byMachine[pay.machine];
-  const plays = playsByMachine[pay.machine];
-  if (!claw || !plays) {
+  if (!claw || !playsByMachine[pay.machine]) {
     why[claw ? 'noFeed' : 'noClaw'] += 1;
     stillWaiting.push(pay);
     continue;
   }
-  const candidates = plays
-    .filter((p) => p.wallet === pay.wallet && p.at / 1000 >= pay.t - MATCH_AFTER_S && p.at / 1000 <= pay.t + MATCH_BEFORE_S)
-    .sort((a, b) => a.at - b.at);
   const day = dayOf(pay.t);
   const file = dayFile(day);
-  const play = candidates.find((p) => !used.has(`${claw.key}|${p.wallet}|${p.at}`));
+  const play = playFor.get(pay);
   if (!play) {
     why.noPlay += 1;
     stillWaiting.push(pay);
@@ -268,7 +274,8 @@ for (const pay of waiting.sort((a, b) => a.t - b.t)) {
   used.add(id);
   state.recent[id] = play.at;
   matched += 1;
-  const list = play.n * (claw.priceUsd || 0);
+  // What reached Beezie's account, so the only difference is what its promo wallet paid.
+  const list = pay.list ?? play.n * (claw.priceUsd || 0);
   const totals = (file.claws[claw.key] ||= { plays: 0, list: 0, paid: 0 });
   totals.plays += 1;
   totals.list += list;
@@ -277,7 +284,7 @@ for (const pay of waiting.sort((a, b) => a.t - b.t)) {
   // figure: how much), are kept one by one; the rest are in the totals.
   const below = Math.abs(list - pay.paid) > 0.005;
   if (below || pay.credits) {
-    file.plays[id] = [Math.round(pay.paid * 100) / 100, list, play.n, ...(pay.credits ? [pay.credits] : [])];
+    file.plays[id] = entryFor({ ...pay, list }, play.n);
     if (below) discounted += 1;
     if (pay.credits) withCredits += 1;
   }
