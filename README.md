@@ -15,5 +15,10 @@ are saved once and kept. It then writes the periods the Data tab shows to `data/
 `summary-1.json` (today, UTC), `-7`, `-30`, `-91`, `-182`, `-365` (calendar days, today
 so far included) and `summary-24h.json` (the last 24 hours as they ran, with hourly buckets).
 
+A player has 15 minutes to keep a slab or swap it, and Beezie lists it as kept until they
+swap. So a pull is only saved to `kv/` once it is 20 minutes old; newer ones are added to
+the summaries as the feed has them now and counted afresh next run. `recount.mjs` ran once
+to rebuild the days from Nov 12 2026, which had been saved too early.
+
 Base's history from before Beezie's migration is not here: Beezie's feed no longer lists
 it, so it can only be imported from the site's old store.

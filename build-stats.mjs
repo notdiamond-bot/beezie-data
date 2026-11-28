@@ -12,7 +12,8 @@ import { fetchAllClaws, CHAIN_KEYS } from './src/chains.js';
 import { BEEZIE_HEADERS } from './api/_headers.js';
 import { FEED_CHAINS, recentClawPulls } from './api/_pulls.js';
 import { existsSync, readFileSync } from 'node:fs';
-import { addPulls, catchUp, dayKey, mergeDay, readMarks, summariseDays } from './api/_stats.js';
+import { addPulls, catchUp, dayKey, mergeDay, newPulls, readMarks, summariseDays } from './api/_stats.js';
+import { recountSettled } from './recount.mjs';
 import { readState } from './api/_store.js';
 import { applyPaid, paidPlays, paidSince } from './api/_paid.js';
 
@@ -29,6 +30,15 @@ const { claws } = await fetchAllClaws({
 if (!claws.length) {
   console.log('Beezie returned no claws; nothing counted this time');
   process.exit(0);
+}
+
+// Once only: the days stored before pulls were given time to settle (recount.mjs).
+// If it can't be done in full it changes nothing, and the next run tries again.
+try {
+  const done = await recountSettled();
+  if (done) console.log(`recounted ${done.slabs} slabs over ${done.days} days`);
+} catch (error) {
+  console.log(`recount not done: ${error.message}`);
 }
 
 // A first run backfills a few claws at a time, so go round until all are counted.
@@ -65,15 +75,36 @@ const baseDay = (day) => {
   const file = new URL(`./base-days/${day}.json`, import.meta.url);
   return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null;
 };
+// The pulls too new to be stored (see SETTLE_MS): added to each period as the
+// feed has them now, so the figures stay current, and counted afresh next run.
+// A slab still undecided shows as kept here, as it does on the Claw Log.
+const unsettled = {};
+await Promise.all(
+  registry
+    .filter((claw) => FEED_CHAINS.includes(claw.blockchain) && !claw.retired && marks[claw.key])
+    .map(async (claw) => {
+      const mark = marks[claw.key];
+      let pulls = null;
+      for (const size of [600, 2000, 6000]) {
+        pulls = await recentClawPulls(claw, size, now).catch(() => null);
+        if (!pulls || pulls.length < size || pulls[pulls.length - 1].at <= mark.at) break;
+      }
+      if (pulls) addPulls(unsettled, claw, newPulls(pulls, mark).fresh);
+    })
+);
 async function loadDays(fromAt, toAt) {
   const out = [];
   for (let at = Date.parse(dayOf(fromAt)); at <= toAt; at += DAY) {
     const day = dayOf(at);
     const stored = await readState(dayKey(day), null);
     const base = baseDay(day);
-    if (!stored && !base) continue;
-    const merged = stored || { claws: {}, players: {}, names: {}, partial: [] };
-    out.push({ day, ...(base ? mergeDay(merged, base) : merged) });
+    // Copied: merging may hold on to what it is given, and each period reads it.
+    const fresh = unsettled[day] ? structuredClone(unsettled[day]) : null;
+    if (!stored && !base && !fresh) continue;
+    let merged = stored || { claws: {}, players: {}, names: {}, partial: [] };
+    if (base) merged = mergeDay(merged, base);
+    if (fresh) merged = mergeDay(merged, fresh);
+    out.push({ day, ...merged });
   }
   return out;
 }

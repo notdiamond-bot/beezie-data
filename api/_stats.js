@@ -105,7 +105,7 @@ const metaOf = (claw) => ({
 // v2: each claw-day keeps its top pulls, not just the biggest.
 // v4: Speculate's (Elysium) and Dev.Fun's plays are each counted as claws of their own.
 const DAY_PREFIX = 'beezie:stats:v4:';
-const MARK_KEY = 'beezie:stats:v4:mark';
+export const MARK_KEY = 'beezie:stats:v4:mark';
 // The last catch-up's start, whether it finished, and its first error, so a run
 // that keeps failing can be seen from outside.
 const ATTEMPT_KEY = 'beezie:stats:v4:attempt';
@@ -168,7 +168,7 @@ const DEEP_SIZES = [2000, 10_000, 50_000, 150_000];
 // The poll reads back at most this far; anything deeper is left to catch-up.
 const POLL_DEEP_MAX = 10_000;
 // The first page a catch-up reads for a claw that is already counted.
-const CATCH_UP_FIRST_PAGE = 200;
+const CATCH_UP_FIRST_PAGE = 600;
 // How far back counting reaches: a year. Beezie's feed itself goes back to
 // mid-January 2026, so today this is everything it has.
 export const BACKFILL_DAYS = 365;
@@ -203,6 +203,14 @@ async function readBack(claw, untilAt, maxSize, first = null, sizes = DEEP_SIZES
     exhausted: Boolean(feed) && feed.length < (feed.asked || Infinity),
   };
 }
+
+// A Beezie player has 15 minutes after a pull to keep the slab or swap it, and
+// the feed lists it as kept until they do. Nothing younger than that, plus a few
+// minutes to spare, is ever stored: a day counted early had half its slabs down
+// as kept, at market value, when they were swapped moments later.
+export const SETTLE_MS = 20 * 60_000;
+/** The pulls whose keep-or-swap is final as of `now`. */
+export const settledPulls = (feed, now) => feed.filter((pull) => pull.at <= now - SETTLE_MS);
 
 const keepTop = (pulls) => pulls.sort((a, b) => b.fmv - a.fmv).slice(0, TOP_PER_DAY);
 
@@ -333,7 +341,7 @@ export function recordStats(claws, feeds, { now = Date.now(), every = SAVE_EVERY
       const mark = marks[key];
       if (claw && !mark && feed.length) untracked.push(key);
       if (!claw || !mark) continue;
-      const result = await forward(claw, mark, feed, POLL_DEEP_MAX, b);
+      const result = await forward(claw, mark, feed, POLL_DEEP_MAX, b, now);
       if (result.at !== mark.at || result.ids.length !== mark.ids.length) moved = true;
       marks[key] = result;
     }
@@ -343,17 +351,17 @@ export function recordStats(claws, feeds, { now = Date.now(), every = SAVE_EVERY
   });
 }
 
-// Count a claw's pulls newer than its mark, reading further back if `feed`
-// doesn't reach it. Returns the new mark.
-async function forward(claw, mark, feed, maxSize, b) {
-  let result = newPulls(feed, mark);
-  if (result.gap) {
-    const deep = await readBack(claw, mark.at, maxSize, feed);
-    result = newPulls(deep.feed, mark);
-    // Still short: whatever happened between the mark and this page is lost.
-    if (result.gap && result.fresh.length) {
-      flagDays(b, claw.key, mark.at, result.fresh[result.fresh.length - 1].at);
-    }
+// Count a claw's settled pulls newer than its mark, reading further back if
+// `feed` doesn't reach it. Returns the new mark.
+async function forward(claw, mark, feed, maxSize, b, now) {
+  // Whether the page reaches is asked of all of it: a busy claw's newest page
+  // can be nothing but pulls too new to count.
+  let page = feed;
+  if (newPulls(page, mark).gap) page = (await readBack(claw, mark.at, maxSize, feed)).feed;
+  const result = newPulls(settledPulls(page, now), mark);
+  // Still short: whatever happened between the mark and this page is lost.
+  if (result.gap && result.fresh.length) {
+    flagDays(b, claw.key, mark.at, result.fresh[result.fresh.length - 1].at);
   }
   if (result.fresh.length) {
     addPulls(b.days, claw, result.fresh);
@@ -366,16 +374,19 @@ async function forward(claw, mark, feed, maxSize, b) {
 // counted: older than its `from`, or newer than its mark. A claw never counted
 // is read in one page as big as the feed serves; one partly counted reads
 // back in growing pages from where it was.
-async function backfillClaw(claw, marks, cutoff, b) {
+async function backfillClaw(claw, marks, cutoff, b, now) {
   const key = claw.key;
   const mark = marks[key];
   const max = DEEP_SIZES[DEEP_SIZES.length - 1];
-  const { feed, exhausted, failed } = await readBack(claw, cutoff, max, null, mark ? DEEP_SIZES : [max]);
+  const { feed: page, exhausted, failed } = await readBack(claw, cutoff, max, null, mark ? DEEP_SIZES : [max]);
   // A read that failed is tried again next time.
   if (failed) return;
+  const feed = settledPulls(page, now);
   if (!feed.length) {
-    // An empty feed: counted, as far as there is anything to count.
-    marks[key] = { ...(mark || { at: 0, ids: [] }), from: cutoff, complete: true };
+    // Nothing to count yet. A claw with only pulls too new to count is marked
+    // just short of its oldest, so the next run takes them all.
+    const at = page.length ? page[page.length - 1].at : 0;
+    marks[key] = { ...(mark || { at, ids: [] }), from: cutoff, complete: true };
     return;
   }
   const older = feed.filter((pull) => pull.at >= cutoff && (!mark || pull.at < mark.from));
@@ -473,7 +484,7 @@ export function catchUp(claws, now = Date.now()) {
           // pulls, and `forward` asks for more when this doesn't reach.
           const feed = await reader(claw, CATCH_UP_FIRST_PAGE).catch(() => null);
           if (feed) {
-            const next = await forward(claw, marks[claw.key], feed, DEEP_SIZES[DEEP_SIZES.length - 1], b);
+            const next = await forward(claw, marks[claw.key], feed, DEEP_SIZES[DEEP_SIZES.length - 1], b, now);
             if (!closed) marks[claw.key] = next;
           }
           running.delete(claw.key);
@@ -498,7 +509,7 @@ export function catchUp(claws, now = Date.now()) {
     let done = 0;
     for (const claw of pending) {
       if (done > 0 && Date.now() - started > BACKFILL_BUDGET_MS) break;
-      await guarded(claw, () => backfillClaw(claw, marks, cutoff, b));
+      await guarded(claw, () => backfillClaw(claw, marks, cutoff, b, now));
       done += 1;
       // Saved now, so a run cut short keeps what it finished.
       marks.claws = registry;
